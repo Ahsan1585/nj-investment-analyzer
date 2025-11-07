@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NJ Real Estate Investment Analyzer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #f4f7f6; }
+        /* Custom scrollbar for aesthetics */
+        .listing-area::-webkit-scrollbar { width: 8px; }
+        .listing-area::-webkit-scrollbar-thumb { background-color: #34d399; border-radius: 4px; }
+        .listing-area::-webkit-scrollbar-track { background-color: #e5e7eb; }
+    </style>
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, setDoc, onSnapshot, query, where, getDocs, updateDoc, deleteDoc, getDoc, runTransaction, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- MANUAL FIREBASE CONFIGURATION FOR GITHUB PAGES DEPLOYMENT ---
+        // This configuration uses the credentials provided in your screenshot.
+        const firebaseConfig = {
+          apiKey: "AIzaSyCE3KVWGEH4DZRzy4ON-aw8Cn2Uz9jZV0vo", 
+          authDomain: "investment-property-anal-e9dcf.firebaseapp.com",
+          projectId: "investment-property-anal-e9dcf",
+          storageBucket: "investment-property-anal-e9dcf.firebaseapp.com", // Corrected bucket path
+          appId: "1:559695263229:web:60b61045abafbe2d65594"
+        };
+        
+        // We set the runtime variables using the hardcoded config
+        const appId = firebaseConfig.projectId; 
+        const initialAuthToken = null; 
+        // -----------------------------------------------------------------
+
+        let db, auth, userId;
+        const app = initializeApp(firebaseConfig);
+        db = getFirestore(app);
+        auth = getAuth(app);
+        
+        // Set log level for debugging Firebase
+        setLogLevel('error'); // Set to 'debug' if troubleshooting is needed
+
+        // --- Core Application Data Structure ---
+        const initialListings = [
+            // Added 'source' and now 'url' fields
+            { id: '1', type: 'Multi-Family', city: 'Princeton Junction', price: 1800000, capRate: 7.5, occupancy: 90, units: 4, noi: 135000, description: '4-unit residential in top-rated school district area.', location_quality: 'A+', source: 'Zillow/Redfin', url: 'https://www.zillow.com/nj/multi-family-homes/' },
+            { id: '2', type: 'Commercial', city: 'Edison', price: 1500000, capRate: 8.0, occupancy: 80, units: 0, noi: 120000, description: 'Small office/retail center near major highway (Rte 1). High economic growth area.', location_quality: 'A', source: 'LoopNet', url: 'https://www.loopnet.com/new-jersey-commercial-real-estate/' },
+            { id: '3', type: 'Multi-Family', city: 'Cherry Hill', price: 1950000, capRate: 7.1, occupancy: 85, units: 6, noi: 138450, description: '6-unit property in South Jersey with excellent access to Philadelphia.', location_quality: 'A-', source: 'LoopNet/Crexi', url: 'https://www.crexi.com/property/for-sale/cherry-hill-nj/' },
+            { id: '4', type: 'Multi-Family', city: 'Montclair', price: 1700000, capRate: 7.2, occupancy: 78, units: 5, noi: 122400, description: 'Historic 5-unit with strong family-oriented community appeal.', location_quality: 'A+', source: 'LoopNet/Crexi', url: 'https://www.loopnet.com/new-jersey-multi-family-homes/' },
+            { id: '5', type: 'Commercial', city: 'Newark', price: 1200000, capRate: 9.5, occupancy: 95, units: 0, noi: 114000, description: 'Retail strip center. High cap rate due to urban growth and revitalization.', location_quality: 'B+', source: 'LoopNet', url: 'https://www.loopnet.com/newark-commercial-real-estate/' },
+            { id: '6', type: 'Multi-Family', city: 'Westfield', price: 1990000, capRate: 7.05, occupancy: 76, units: 3, noi: 140295, description: '3-unit property in a prestigious, high-demand suburban market.', location_quality: 'A+', source: 'Zillow/Redfin', url: 'https://www.redfin.com/NJ/Westfield/multi-family' },
+        ];
+
+        // --- Firebase Initialization and Data Fetching ---
+
+        async function initFirebase() {
+            try {
+                // 1. Sign in (Anonymous sign-in since we don't have a token)
+                await signInAnonymously(auth);
+
+                userId = auth.currentUser ? auth.currentUser.uid : 'anonymous';
+                document.getElementById('user-id').textContent = `User ID: ${userId}`;
+                
+                // 2. Load or Initialize Data
+                const listingsRef = collection(db, `artifacts/${appId}/public/data/investment_listings`);
+                const q = query(listingsRef);
+
+                onSnapshot(q, (snapshot) => {
+                    if (snapshot.empty) {
+                        console.log("No data found. Initializing mock data...");
+                        // Use a transaction to safely initialize data if it doesn't exist
+                        runTransaction(db, async (transaction) => {
+                            const checkDoc = await transaction.get(doc(listingsRef, 'listing_check'));
+                            if (!checkDoc.exists()) {
+                                initialListings.forEach(listing => {
+                                    // Use a unique ID field if not provided by Firestore
+                                    const docId = listing.id; 
+                                    transaction.set(doc(listingsRef, docId), listing);
+                                });
+                                transaction.set(doc(listingsRef, 'listing_check'), { initialized: true, timestamp: new Date() });
+                            }
+                        }).then(() => {
+                            console.log("Mock data initialization attempt complete.");
+                        }).catch(error => {
+                            console.error("Transaction failed to initialize data:", error);
+                        });
+                        
+                    } else {
+                        const loadedListings = [];
+                        snapshot.forEach(doc => {
+                            if (doc.id !== 'listing_check') {
+                                loadedListings.push(doc.data());
+                            }
+                        });
+                        renderListings(loadedListings);
+                    }
+                }, (error) => {
+                    console.error("Error setting up onSnapshot listener:", error);
+                    document.getElementById('listings-table-body').innerHTML = `<tr><td colspan="8" class="py-4 text-center text-red-500">Error loading data: ${error.message}</td></tr>`;
+                });
+
+            } catch (error) {
+                console.error("Firebase Initialization or Sign-in Failed:", error);
+                document.getElementById('listings-table-body').innerHTML = `<tr><td colspan="8" class="py-4 text-center text-red-500">Firebase Auth Error: ${error.message}</td></tr>`;
+            }
+        }
+
+        // --- Rendering and Filtering Logic ---
+
+        function formatCurrency(amount) {
+            return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(amount);
+        }
+
+        function renderListings(listings) {
+            const tbody = document.getElementById('listings-table-body');
+            const capRateFilter = parseFloat(document.getElementById('capRateFilter').value) || 0;
+            const occupancyFilter = parseFloat(document.getElementById('occupancyFilter').value) || 0;
+            const typeFilter = document.getElementById('typeFilter').value;
+            
+            const filteredListings = listings.filter(listing => {
+                const capRate = listing.capRate || 0;
+                const occupancy = listing.occupancy || 0;
+                
+                const matchesCapRate = capRate >= capRateFilter;
+                const matchesOccupancy = occupancy >= occupancyFilter;
+                const matchesType = typeFilter === 'All' || listing.type === typeFilter;
+                const matchesPrice = (listing.price || 0) <= 2000000; // Hard coded max price filter
+
+                return matchesCapRate && matchesOccupancy && matchesType && matchesPrice;
+            });
+            
+            // Sort by Cap Rate descending
+            filteredListings.sort((a, b) => (b.capRate || 0) - (a.capRate || 0));
+
+            tbody.innerHTML = '';
+            
+            if (filteredListings.length === 0) {
+                 tbody.innerHTML = `<tr><td colspan="8" class="py-4 text-center text-gray-500">No properties match the current criteria.</td></tr>`;
+                 return;
+            }
+
+            filteredListings.forEach(listing => {
+                const row = document.createElement('tr');
+                row.className = 'border-b hover:bg-emerald-50 cursor-pointer transition-all duration-150';
+                
+                // Add click listener to load listing data into calculator
+                row.addEventListener('click', () => loadListingIntoCalculator(listing));
+
+                row.innerHTML = `
+                    <td class="px-4 py-3 text-sm font-medium text-gray-900">${listing.city}</td>
+                    <td class="px-4 py-3 text-sm text-gray-600">${listing.type}</td>
+                    <td class="px-4 py-3 text-sm font-semibold text-emerald-600">${(listing.capRate || 0).toFixed(2)}%</td>
+                    <td class="px-4 py-3 text-sm">${(listing.occupancy || 0).toFixed(0)}%</td>
+                    <td class="px-4 py-3 text-sm text-gray-900">${formatCurrency(listing.price || 0)}</td>
+                    <td class="px-4 py-3 text-sm text-gray-600">${formatCurrency(listing.noi || 0)}</td>
+                    <td class="px-4 py-3 text-sm font-medium text-indigo-600">${listing.location_quality}</td>
+                    <td class="px-4 py-3 text-sm font-medium text-gray-500">${listing.source}</td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
+        function loadListingIntoCalculator(listing) {
+            document.getElementById('property-price').value = listing.price || 0;
+            calculateMortgage();
+            
+            // NEW CODE: Update Source Info Panel
+            const sourcePanel = document.getElementById('listing-source-info');
+            
+            const buttonHtml = `
+                <button id="view-listing-btn" data-url="${listing.url}" class="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg shadow-md transition-colors duration-200">
+                    View Original Listing on ${listing.source}
+                </button>
+            `;
+            
+            const messageHtml = `
+                <p id="simulated-link-message" class="text-xs text-red-600 mt-2 text-center hidden">
+                    <!-- Message content will be injected by JavaScript -->
+                </p>
+            `;
+            
+            sourcePanel.innerHTML = `
+                <div class="p-4 bg-emerald-100 rounded-xl border-2 border-emerald-300">
+                    <h4 class="font-bold text-lg text-emerald-800 mb-1 flex items-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-1" viewBox="0 0 20 20" fill="currentColor">
+                          <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
+                        </svg>
+                        Listing Details: ${listing.city}
+                    </h4>
+                    <p class="text-sm text-emerald-700 font-semibold">${listing.description}</p>
+                    <div class="mt-4 pt-2 border-t border-emerald-300">
+                        ${buttonHtml}
+                        ${messageHtml}
+                    </div>
+                </div>
+            `;
+            
+            // Add event listener to the simulated button
+            document.getElementById('view-listing-btn').addEventListener('click', (event) => {
+                 event.preventDefault();
+                 const url = event.target.getAttribute('data-url');
+                 const messageElement = document.getElementById('simulated-link-message');
+                 
+                 // Update message to show the intended URL
+                 messageElement.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 inline mr-1" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
+                    </svg>
+                    External link **${url}** cannot be opened in this sandbox environment.
+                `;
+                 messageElement.classList.remove('hidden');
+            });
+
+
+            // Scroll to the calculator section on mobile
+            if (window.innerWidth < 768) {
+                document.getElementById('calculator-card').scrollIntoView({ behavior: 'smooth' });
+            }
+        }
+
+        // --- Mortgage Calculator Logic (Unchanged) ---
+        
+        // This is a standard commercial fixed rate for multifamily loans as of late 2025 (Source 4.3)
+        const BASE_RATE = 5.85; 
+
+        function calculateMortgage() {
+            const P_input = document.getElementById('property-price');
+            const down_input = document.getElementById('down-payment');
+            const rate_input = document.getElementById('interest-rate');
+            const amortization_input = document.getElementById('amortization-period');
+            const resultsDiv = document.getElementById('mortgage-results');
+
+            const P = parseFloat(P_input.value.replace(/[^0-9.]/g, '')) || 0; // Principal (Loan Amount)
+            const downPercent = parseFloat(down_input.value) / 100 || 0.25; // Assuming 25% minimum down for commercial
+            const R = (parseFloat(rate_input.value) / 100) / 12; // Monthly Interest Rate
+            const N = parseFloat(amortization_input.value) * 12; // Total Number of Payments
+
+            const loanAmount = P * (1 - downPercent);
+            
+            // Check for valid inputs
+            if (P <= 0 || R <= 0 || N <= 0) {
+                resultsDiv.innerHTML = `
+                    <div class="text-center p-4">
+                        <p class="text-gray-500 font-medium">Please enter valid Property Price, Down Payment, and Amortization Period.</p>
+                        <p class="text-xs text-red-500 mt-2">Commercial loans typically require a minimum 25% down payment.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            // Mortgage Payment Formula: M = P [ i(1 + i)^n ] / [ (1 + i)^n – 1 ]
+            const monthlyPayment = loanAmount * (R * Math.pow((1 + R), N)) / (Math.pow((1 + R), N) - 1);
+            const totalPayment = monthlyPayment * N;
+            const totalInterest = totalPayment - loanAmount;
+
+            resultsDiv.innerHTML = `
+                <div class="space-y-4">
+                    <div class="flex justify-between items-center border-b pb-2">
+                        <span class="text-gray-600 font-medium">Loan Amount:</span>
+                        <span class="text-lg font-bold text-indigo-700">${formatCurrency(loanAmount)}</span>
+                    </div>
+                    <div class="flex justify-between items-center border-b pb-2">
+                        <span class="text-gray-600 font-medium">Monthly P&I Payment:</span>
+                        <span class="text-xl font-bold text-emerald-600">${formatCurrency(monthlyPayment)} / month</span>
+                    </div>
+                    <div class="flex justify-between items-center border-b pb-2">
+                        <span class="text-gray-600 font-medium">Total Interest Paid:</span>
+                        <span class="text-md font-semibold text-red-500">${formatCurrency(totalInterest)}</span>
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-gray-600 font-medium">Total Paid (Principal + Interest):</span>
+                        <span class="text-md font-semibold text-gray-700">${formatCurrency(totalPayment)}</span>
+                    </div>
+                </div>
+            `;
+        }
+
+        // --- Event Listeners and Initial Load ---
+        
+        window.addEventListener('load', () => {
+            initFirebase();
+            
+            // Initial render of mock data if Firebase isn't ready immediately
+            renderListings(initialListings); 
+            
+            // Set initial rate and calculate
+            document.getElementById('interest-rate').value = BASE_RATE.toFixed(2);
+            calculateMortgage(); 
+
+            // Add change/input listeners for filters
+            document.getElementById('capRateFilter').addEventListener('input', () => {
+                // Rerender when filter changes. The onSnapshot listener will handle the actual data.
+                const currentListings = Array.from(document.getElementById('listings-table-body').children)
+                    .map(row => {
+                        // Dummy way to get data if onSnapshot hasn't fired, but it's best to rely on the snapshot data
+                        return { 
+                            city: row.children[0].textContent,
+                            type: row.children[1].textContent,
+                            capRate: parseFloat(row.children[2].textContent.replace('%', '')),
+                            occupancy: parseFloat(row.children[3].textContent.replace('%', '')),
+                            price: parseFloat(row.children[4].textContent.replace(/[^0-9.]/g, '')),
+                            noi: parseFloat(row.children[5].textContent.replace(/[^0-9.]/g, '')),
+                            location_quality: row.children[6].textContent,
+                            source: row.children[7].textContent
+                        }
+                    });
+                renderListings(initialListings); // Re-run filter on the original mock data until snapshot updates
+            });
+
+            document.getElementById('occupancyFilter').addEventListener('input', () => renderListings(initialListings));
+            document.getElementById('typeFilter').addEventListener('change', () => renderListings(initialListings));
+
+            // Add input listeners for the mortgage calculator
+            document.getElementById('calculator-inputs').addEventListener('input', calculateMortgage);
+        });
+
+        // Expose functions to the global scope for event listeners defined in HTML
+        window.calculateMortgage = calculateMortgage;
+        window.renderListings = renderListings; // For initial load fallback
+        
+    </script>
+</head>
+<body class="min-h-screen p-4 md:p-8">
+
+    <header class="text-center mb-8">
+        <h1 class="text-4xl font-extrabold text-emerald-800">NJ Investment Property Analyzer</h1>
+        <p class="text-gray-600 mt-1">Focused on Multi-Family & Commercial Real Estate under $2M</p>
+        <p id="user-id" class="text-xs text-gray-400 mt-2"></p>
+    </header>
+
+    <main class="md:flex md:space-x-8 max-w-7xl mx-auto">
+        
+        <!-- Listings Section -->
+        <section class="flex-1 mb-8 md:mb-0 bg-white p-6 rounded-xl shadow-2xl border border-gray-100">
+            <h2 class="text-2xl font-bold text-gray-800 mb-4 flex items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-emerald-500 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 011 1h3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+                </svg>
+                Qualified Investment Listings
+            </h2>
+            <p class="text-sm text-gray-500 mb-4">Click a listing to see details and auto-populate the calculator.</p>
+
+            <!-- Filters -->
+            <div class="flex flex-wrap gap-4 mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                <div>
+                    <label for="typeFilter" class="block text-xs font-medium text-gray-700 mb-1">Property Type</label>
+                    <select id="typeFilter" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-emerald-500 focus:border-emerald-500 sm:text-sm rounded-md shadow-sm">
+                        <option>All</option>
+                        <option>Multi-Family</option>
+                        <option>Commercial</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="capRateFilter" class="block text-xs font-medium text-gray-700 mb-1">Min Cap Rate (%)</label>
+                    <input type="number" id="capRateFilter" value="7.0" min="0" step="0.1" class="mt-1 block w-24 pl-3 py-2 border-gray-300 focus:ring-emerald-500 focus:border-emerald-500 rounded-md shadow-sm text-center">
+                </div>
+                <div>
+                    <label for="occupancyFilter" class="block text-xs font-medium text-gray-700 mb-1">Min Occupancy (%)</label>
+                    <input type="number" id="occupancyFilter" value="75" min="0" max="100" class="mt-1 block w-24 pl-3 py-2 border-gray-300 focus:ring-emerald-500 focus:border-emerald-500 rounded-md shadow-sm text-center">
+                </div>
+            </div>
+
+            <!-- Listings Table (Responsive) -->
+            <div class="overflow-x-auto listing-area">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-emerald-50">
+                        <tr>
+                            <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">City</th>
+                            <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
+                            <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Cap Rate</th>
+                            <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Occupancy</th>
+                            <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Price (Max $2M)</th>
+                            <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">NOI</th>
+                            <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Family/Econ Quality</th>
+                            <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Source</th>
+                        </tr>
+                    </thead>
+                    <tbody id="listings-table-body" class="bg-white divide-y divide-gray-200">
+                        <!-- Listings will be injected here by JavaScript -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Mortgage Calculator Section -->
+        <section id="calculator-card" class="md:w-96 bg-white p-6 rounded-xl shadow-2xl border border-gray-100 sticky top-8 self-start">
+            <h2 class="text-2xl font-bold text-gray-800 mb-6 flex items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-indigo-500 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c1.657 0 3 .895 3 2s-1.343 2-3 2-3 .895-3 2 1.343 2 3 2m0-8V9m0 3v1m0 3v1m0 0h-2m2 0h2M7 6h10L10 4l-3 2z"/>
+                </svg>
+                Commercial Mortgage Calculator
+            </h2>
+
+            <!-- NEW: Listing Source/Detail Panel -->
+            <div id="listing-source-info" class="mb-6 p-1 border-b border-indigo-200">
+                <p class="text-sm text-gray-500 italic">Click a property in the table to view its source and description here.</p>
+            </div>
+
+
+            <div id="calculator-inputs" class="space-y-4">
+                
+                <!-- Property Price -->
+                <div>
+                    <label for="property-price" class="block text-sm font-medium text-gray-700">Property Price ($)</label>
+                    <div class="mt-1 relative rounded-md shadow-sm">
+                        <input type="number" id="property-price" value="1800000" class="focus:ring-indigo-500 focus:border-indigo-500 block w-full pl-3 pr-12 sm:text-sm border-gray-300 rounded-md" placeholder="1500000">
+                        <div class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
+                          <span class="text-gray-500 sm:text-sm">USD</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Down Payment -->
+                <div>
+                    <label for="down-payment" class="block text-sm font-medium text-gray-700">Down Payment (%)</label>
+                    <div class="mt-1 relative rounded-md shadow-sm">
+                        <input type="number" id="down-payment" value="25" min="20" max="100" class="focus:ring-indigo-500 focus:border-indigo-500 block w-full pl-3 pr-12 sm:text-sm border-gray-300 rounded-md" placeholder="25">
+                        <div class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
+                          <span class="text-gray-500 sm:text-sm">%</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Interest Rate -->
+                <div>
+                    <label for="interest-rate" class="block text-sm font-medium text-gray-700">Interest Rate (Current Estimate)</label>
+                    <div class="mt-1 relative rounded-md shadow-sm">
+                        <input type="number" id="interest-rate" value="5.85" min="1" step="0.01" class="focus:ring-indigo-500 focus:border-indigo-500 block w-full pl-3 pr-12 sm:text-sm border-gray-300 rounded-md" placeholder="5.85">
+                        <div class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
+                          <span class="text-gray-500 sm:text-sm">%</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Amortization Period -->
+                <div>
+                    <label for="amortization-period" class="block text-sm font-medium text-gray-700">Amortization Period (Years)</label>
+                    <div class="mt-1 relative rounded-md shadow-sm">
+                        <input type="number" id="amortization-period" value="25" min="15" max="30" class="focus:ring-indigo-500 focus:border-indigo-500 block w-full pl-3 pr-12 sm:text-sm border-gray-300 rounded-md" placeholder="25">
+                        <div class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
+                          <span class="text-gray-500 sm:text-sm">Yrs</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Results -->
+            <div class="mt-8 pt-4 border-t-4 border-indigo-200 bg-indigo-50 p-4 rounded-lg shadow-inner">
+                <h3 class="text-xl font-bold text-indigo-800 mb-3">Estimated Results</h3>
+                <div id="mortgage-results">
+                    <!-- Results will be injected here by JavaScript -->
+                </div>
+            </div>
+            
+        </section>
+
+    </main>
+
+</body>
+</html>
